@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <title>Color Transfer (MKL)</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.16.0/dist/tf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/numeric/1.2.6/numeric.min.js"></script>
+  <style>
+    #loadingOverlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(255, 255, 255, 0.8);
+      display: none;
+      align-items: center;
+      /* vertical centering */
+      justify-content: center;
+      /* horizontal centering */
+      z-index: 1000;
+      font-size: 1.5em;
+      color: #333;
+      flex-direction: column;
+      /* stack spinner and text vertically */
+    }
+
+
+    .spinner {
+      border: 6px solid #ccc;
+      border-top: 6px solid #333;
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      animation: spin 1s linear infinite;
+      margin-bottom: 10px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    @keyframes spin {
+      0% {
+        transform: rotate(0deg);
+      }
+
+      100% {
+        transform: rotate(360deg);
+      }
+    }
+
+
+    body {
+      font-family: sans-serif;
+      padding: 20px;
+      background: #f4f4f4;
+    }
+
+    canvas,
+    img {
+      margin-top: 10px;
+      max-width: 100%;
+    }
+
+    input {
+      margin: 5px 0;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="loadingOverlay">
+    <div style="text-align: center;">
+      <div class="spinner"></div>
+      <p>Processing color transfer... </p>
+    </div>
+  </div>
+
+  <h2>MKL Color Transfer</h2>
+  <label>Upload Reference Image: <input type="file" id="sourceInput"></label><br>
+  <label>Upload Subject Image: <input type="file" id="targetInput"></label><br>
+  <button onclick="runColorTransfer()">Transfer Colors</button>
+  <br><br>
+  <canvas id="canvas" style="display: none;"></canvas>
+  <h3>Result:</h3>
+  <img id="outputImage">
+  <br>
+  <a id="downloadLink" style="display: none;" download="output.jpg">Download Result</a>
+
+  <script>
+    let sourceImageData, targetImageData;
+
+    function readImage(input, callback) {
+      const file = input.files[0];
+      const reader = new FileReader();
+      reader.onload = function (e) {
+        const img = new Image();
+        img.onload = () => callback(img);
+        img.src = e.target.result;
+      };
+      reader.readAsDataURL(file);
+    }
+
+    function getImageData(image) {
+      const canvas = document.getElementById('canvas');
+      canvas.width = image.width;
+      canvas.height = image.height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(image, 0, 0);
+      return ctx.getImageData(0, 0, image.width, image.height);
+    }
+
+    function flattenImageData(imageData) {
+      const data = imageData.data;
+      const arr = [];
+      for (let i = 0; i < data.length; i += 4) {
+        arr.push([data[i] / 255, data[i + 1] / 255, data[i + 2] / 255]);
+      }
+      return arr;
+    }
+
+    function reshape(flatData, width, height) {
+      const result = new Uint8ClampedArray(width * height * 4);
+      for (let i = 0; i < flatData.length; i++) {
+        result[i * 4] = flatData[i][0] * 255;
+        result[i * 4 + 1] = flatData[i][1] * 255;
+        result[i * 4 + 2] = flatData[i][2] * 255;
+        result[i * 4 + 3] = 255;
+      }
+      return result;
+    }
+
+    function mean(arr) {
+      const sum = arr.reduce((acc, val) => acc.map((a, i) => a + val[i]), [0, 0, 0]);
+      return sum.map(x => x / arr.length);
+    }
+
+    function subtract(arr, mean) {
+      return arr.map(row => row.map((val, i) => val - mean[i]));
+    }
+
+    function add(arr, mean) {
+      return arr.map(row => row.map((val, i) => val + mean[i]));
+    }
+
+    function covariance(X) {
+      const m = X.length;
+      const XT = numeric.transpose(X);
+      const cov = numeric.dot(XT, X);
+      return numeric.div(cov, m - 1);
+    }
+
+    function MKL(A, B) {
+      const EPS = 2.2204e-16;
+      const eigA = numeric.eig(A);
+      let Da2 = numeric.diag(eigA.lambda.x);
+      let Ua = eigA.E.x;
+      Da2 = Da2.map(row => row.map(v => Math.max(v, 0)));
+      const Da = numeric.sqrt(numeric.add(Da2, EPS));
+      const Da_inv = numeric.inv(Da);
+      const C = numeric.dotMMbig(Da, numeric.dotMMbig(numeric.transpose(Ua), numeric.dotMMbig(B, numeric.dotMMbig(Ua, Da))));
+      const eigC = numeric.eig(C);
+      let Dc2 = numeric.diag(eigC.lambda.x);
+      Dc2 = Dc2.map(row => row.map(v => Math.max(v, 0)));
+      const Dc = numeric.sqrt(numeric.add(Dc2, EPS));
+      const Uc = eigC.E.x;
+      const T = numeric.dotMMbig(
+        Ua,
+        numeric.dotMMbig(
+          Da_inv,
+          numeric.dotMMbig(
+            Uc,
+            numeric.dotMMbig(Dc, numeric.dotMMbig(numeric.transpose(Uc), numeric.dotMMbig(Da_inv, numeric.transpose(Ua))))
+          )
+        )
+      );
+      return T;
+    }
+
+    function showLoading() {
+      document.getElementById('loadingOverlay').style.display = 'flex';
+    }
+
+    function hideLoading() {
+      document.getElementById('loadingOverlay').style.display = 'none';
+    }
+    async function runColorTransfer() {
+      if (!sourceImageData || !targetImageData) {
+        alert('Please upload both images first.');
+        return;
+      }
+      showLoading();
+
+      // Let the UI update before processing
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      try {
+
+        const X0 = flattenImageData(targetImageData);
+        const X1 = flattenImageData(sourceImageData);
+
+        const A = covariance(X0);
+        const B = covariance(X1);
+        const T = MKL(A, B);
+
+        const mX0 = mean(X0);
+        const mX1 = mean(X1);
+        const X0_centered = subtract(X0, mX0);
+        let XR = numeric.dot(X0_centered, T);
+        XR = add(XR, mX1);
+
+        // Clamp
+        XR = XR.map(p => p.map(c => Math.min(1, Math.max(0, c))));
+
+        const outputData = reshape(XR, targetImageData.width, targetImageData.height);
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const imageData = ctx.createImageData(targetImageData.width, targetImageData.height);
+        imageData.data.set(outputData);
+        ctx.putImageData(imageData, 0, 0);
+
+        // Show image
+        const outputImage = document.getElementById('outputImage');
+        outputImage.src = canvas.toDataURL();
+
+        // Download link
+        const link = document.getElementById('downloadLink');
+        link.href = canvas.toDataURL("image/jpeg");
+        link.style.display = 'inline-block';
+      } catch (err) {
+        alert('Error during color transfer: ' + err.message);
+        console.error(err);
+      }
+
+      hideLoading();
+    }
+
+    document.getElementById('sourceInput').addEventListener('change', (e) => {
+      readImage(e.target, img => sourceImageData = getImageData(img));
+    });
+
+    document.getElementById('targetInput').addEventListener('change', (e) => {
+      readImage(e.target, img => targetImageData = getImageData(img));
+    });
+  </script>
+</body>
+
+</html>
