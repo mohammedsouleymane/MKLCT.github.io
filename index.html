@@ -196,6 +196,8 @@
     function hideLoading() {
       document.getElementById('loadingOverlay').style.display = 'none';
     }
+
+
     async function runColorTransfer() {
       if (!sourceImageData || !targetImageData) {
         alert('Please upload both images first.');
@@ -221,8 +223,13 @@
         let XR = numeric.dot(X0_centered, T);
         XR = add(XR, mX1);
 
+
+
         // Clamp
         XR = XR.map(p => p.map(c => Math.min(1, Math.max(0, c))));
+
+
+        const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
         const outputData = reshape(XR, targetImageData.width, targetImageData.height);
         const canvas = document.getElementById('canvas');
@@ -231,9 +238,14 @@
         imageData.data.set(outputData);
         ctx.putImageData(imageData, 0, 0);
 
-        // Show image
-        const outputImage = document.getElementById('outputImage');
-        outputImage.src = canvas.toDataURL();
+
+        if (!isMobile) {
+          // Show image
+          const outputImage = document.getElementById('outputImage');
+          outputImage.src = canvas.toDataURL();
+        }
+
+
 
         // Download link
         const link = document.getElementById('downloadLink');
